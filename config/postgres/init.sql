@@ -48,8 +48,9 @@ CREATE TABLE IF NOT EXISTS files (
     checksum_encrypted VARCHAR(64) NOT NULL,     -- SHA-256 of encrypted blob
 
     -- Encryption metadata (NOT the key itself)
+    encrypted_dek TEXT NOT NULL,                 -- Wrapped DEK from Vault (vault:v1:...)
     vault_key_version INTEGER NOT NULL,          -- Vault key version used
-    encryption_iv VARCHAR(32),                   -- IV (safe to store)
+    encryption_iv VARCHAR(48),                   -- IV/Nonce base64 (safe to store)
 
     -- Ownership
     owner_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
