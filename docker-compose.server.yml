@@ -1,0 +1,245 @@
+# =============================================================================
+# HRIS Filesystem - Home Server Environment
+# =============================================================================
+# Services: postgres, vault, file-storage-api, sftp-server
+# Accessed by: Local Laptop (api-service, encryption-service)
+# =============================================================================
+
+name: hris-server
+
+services:
+  # ===========================================================================
+  # POSTGRESQL (Metadata Database)
+  # ===========================================================================
+  postgres:
+    image: postgres:16-alpine
+    container_name: hris-postgres
+    restart: unless-stopped
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    environment:
+      - POSTGRES_USER=${POSTGRES_USER}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
+      - POSTGRES_DB=${POSTGRES_DB}
+      - PGDATA=/var/lib/postgresql/data/pgdata
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+      - ./config/postgres/init.sql:/docker-entrypoint-initdb.d/01-init.sql:ro
+      - ./config/postgres/ssl:/var/lib/postgresql/ssl:ro
+    networks:
+      - db-net
+    command:
+      - "postgres"
+      - "-c"
+      - "ssl=on"
+      - "-c"
+      - "ssl_cert_file=/var/lib/postgresql/ssl/server.crt"
+      - "-c"
+      - "ssl_key_file=/var/lib/postgresql/ssl/server.key"
+      - "-c"
+      - "log_statement=all"
+      - "-c"
+      - "log_connections=on"
+      - "-c"
+      - "log_disconnections=on"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+    labels:
+      - "hris.service=postgres"
+      - "hris.tier=database"
+      - "hris.data=metadata-only"
+
+  # ===========================================================================
+  # HASHICORP VAULT (Key Management System)
+  # ===========================================================================
+  vault:
+    image: hashicorp/vault:1.15
+    container_name: hris-vault
+    restart: unless-stopped
+    ports:
+      - "${VAULT_PORT:-8200}:8200"
+    environment:
+      - VAULT_ADDR=http://127.0.0.1:8200
+      - VAULT_API_ADDR=http://0.0.0.0:8200
+      - VAULT_DEV_ROOT_TOKEN_ID=${VAULT_DEV_ROOT_TOKEN:-devroot}
+      # Production: Remove VAULT_DEV_* and use file config
+    volumes:
+      - vault-data:/vault/data
+      - vault-logs:/vault/logs
+      - ./config/vault/config.hcl:/vault/config/config.hcl:ro
+      - ./config/vault/policies:/vault/policies:ro
+    networks:
+      - vault-net
+    cap_add:
+      - IPC_LOCK
+    command: >
+      sh -c "
+        if [ '${VAULT_MODE:-dev}' = 'dev' ]; then
+          vault server -dev -dev-listen-address=0.0.0.0:8200
+        else
+          vault server -config=/vault/config/config.hcl
+        fi
+      "
+    healthcheck:
+      test: ["CMD", "vault", "status", "-address=http://127.0.0.1:8200"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+    labels:
+      - "hris.service=vault"
+      - "hris.tier=security"
+      - "hris.critical=true"
+
+  # ===========================================================================
+  # FILE-STORAGE-API (Node.js Thin Wrapper)
+  # ===========================================================================
+  file-storage-api:
+    build:
+      context: ./services/file-storage-api
+      dockerfile: Dockerfile
+    container_name: hris-file-storage-api
+    restart: unless-stopped
+    ports:
+      - "${FILE_STORAGE_API_PORT:-8082}:8082"
+    environment:
+      # Server Config
+      - NODE_ENV=production
+      - PORT=8082
+      - HOST=0.0.0.0
+
+      # SFTP Connection (Internal)
+      - SFTP_HOST=sftp-server
+      - SFTP_PORT=22
+      - SFTP_USER=${SFTP_USER:-hris}
+      - SFTP_PRIVATE_KEY_PATH=/app/keys/sftp_key
+      - SFTP_BASE_PATH=/data/encrypted
+
+      # API Security
+      - API_KEY=${FILE_STORAGE_API_KEY}
+      - ALLOWED_IPS=${ALLOWED_IPS:-}
+
+      # Checksum
+      - CHECKSUM_ALGORITHM=sha256
+
+      # Logging
+      - LOG_LEVEL=${LOG_LEVEL:-info}
+    volumes:
+      - ./config/sftp/keys:/app/keys:ro
+    networks:
+      - storage-net
+    depends_on:
+      sftp-server:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:8082/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 20s
+    labels:
+      - "hris.service=file-storage-api"
+      - "hris.tier=storage"
+
+  # ===========================================================================
+  # SFTP-SERVER (atmoz/sftp - Encrypted File Storage)
+  # ===========================================================================
+  sftp-server:
+    image: atmoz/sftp:alpine
+    container_name: hris-sftp-server
+    restart: unless-stopped
+    # Port NOT exposed externally - only file-storage-api can access
+    # ports:
+    #   - "${SFTP_PORT:-2222}:22"
+    environment:
+      - SFTP_USERS=${SFTP_USER:-hris}::1000:1000:data/encrypted
+    volumes:
+      - file-storage:/home/${SFTP_USER:-hris}/data
+      - ./config/sftp/keys/sftp_key.pub:/home/${SFTP_USER:-hris}/.ssh/keys/sftp_key.pub:ro
+      - ./config/sftp/sshd_config:/etc/ssh/sshd_config.d/custom.conf:ro
+    networks:
+      - storage-net
+    healthcheck:
+      test: ["CMD-SHELL", "nc -z localhost 22 || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 15s
+    labels:
+      - "hris.service=sftp-server"
+      - "hris.tier=storage"
+      - "hris.data=encrypted-blobs-only"
+
+# =============================================================================
+# NETWORKS
+# =============================================================================
+networks:
+  db-net:
+    driver: bridge
+    name: hris-db-net
+    ipam:
+      config:
+        - subnet: 172.22.0.0/24
+    labels:
+      - "hris.network=database"
+      - "hris.description=postgres database network"
+
+  vault-net:
+    driver: bridge
+    name: hris-vault-net
+    ipam:
+      config:
+        - subnet: 172.23.0.0/24
+    labels:
+      - "hris.network=vault"
+      - "hris.description=vault KMS network"
+
+  storage-net:
+    driver: bridge
+    name: hris-storage-net
+    internal: true  # No external access - file-storage-api is the gateway
+    ipam:
+      config:
+        - subnet: 172.24.0.0/24
+    labels:
+      - "hris.network=storage"
+      - "hris.description=file-storage-api <-> sftp-server communication"
+
+# =============================================================================
+# VOLUMES
+# =============================================================================
+volumes:
+  postgres-data:
+    driver: local
+    name: hris-postgres-data
+    labels:
+      - "hris.volume=postgres"
+      - "hris.data=metadata-only"
+      - "hris.backup=required"
+
+  vault-data:
+    driver: local
+    name: hris-vault-data
+    labels:
+      - "hris.volume=vault"
+      - "hris.data=encrypted-keys"
+      - "hris.backup=critical"
+
+  vault-logs:
+    driver: local
+    name: hris-vault-logs
+    labels:
+      - "hris.volume=vault-logs"
+      - "hris.data=audit-logs"
+
+  file-storage:
+    driver: local
+    name: hris-file-storage
+    labels:
+      - "hris.volume=file-storage"
+      - "hris.data=encrypted-blobs-only"
+      - "hris.backup=required"

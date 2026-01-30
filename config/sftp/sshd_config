@@ -1,0 +1,41 @@
+# =============================================================================
+# HRIS Filesystem - SFTP Server Configuration
+# =============================================================================
+# Hardened SSH configuration for SFTP-only access
+# =============================================================================
+
+# Disable password authentication - key only
+PasswordAuthentication no
+PermitEmptyPasswords no
+
+# Disable root login
+PermitRootLogin no
+
+# Only allow SFTP subsystem
+Subsystem sftp internal-sftp
+
+# Chroot users to their home directory
+ChrootDirectory /home/%u
+
+# Force SFTP protocol only
+ForceCommand internal-sftp
+
+# Connection settings
+MaxAuthTries 3
+LoginGraceTime 30
+
+# Disable unused features
+X11Forwarding no
+AllowTcpForwarding no
+AllowAgentForwarding no
+PermitTunnel no
+
+# Logging
+LogLevel VERBOSE
+
+# Idle timeout (5 minutes)
+ClientAliveInterval 300
+ClientAliveCountMax 0
+
+# Allow only specific users
+AllowUsers hris

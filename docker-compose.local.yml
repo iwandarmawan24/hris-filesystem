@@ -1,0 +1,165 @@
+# =============================================================================
+# HRIS Filesystem - Local Development Environment
+# =============================================================================
+# Services: app-client, api-service, encryption-service
+# Connects to: Home Server (postgres, vault, file-storage-api)
+# =============================================================================
+
+name: hris-local
+
+services:
+  # ===========================================================================
+  # APP-CLIENT (React + Vite)
+  # ===========================================================================
+  app-client:
+    build:
+      context: ./services/app-client
+      dockerfile: Dockerfile
+      target: development
+    container_name: hris-app-client
+    restart: unless-stopped
+    ports:
+      - "${APP_CLIENT_PORT:-3000}:3000"
+    environment:
+      - NODE_ENV=development
+      - VITE_API_URL=${API_SERVICE_URL:-http://localhost:8080}
+    volumes:
+      - ./services/app-client/src:/app/src:ro
+      - ./services/app-client/public:/app/public:ro
+    networks:
+      - frontend-net
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:3000"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+    labels:
+      - "hris.service=app-client"
+      - "hris.tier=frontend"
+
+  # ===========================================================================
+  # API-SERVICE (Node.js + Fastify)
+  # ===========================================================================
+  api-service:
+    build:
+      context: ./services/api-service
+      dockerfile: Dockerfile
+      target: development
+    container_name: hris-api-service
+    restart: unless-stopped
+    ports:
+      - "${API_SERVICE_PORT:-8080}:8080"
+    environment:
+      # Server Config
+      - NODE_ENV=development
+      - PORT=8080
+      - HOST=0.0.0.0
+
+      # Database (Home Server)
+      - DATABASE_URL=postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@${HOME_SERVER_HOST}:${POSTGRES_PORT:-5432}/${POSTGRES_DB}?sslmode=require
+
+      # Encryption Service (Local)
+      - ENCRYPTION_SERVICE_URL=http://encryption-service:8081
+
+      # File Storage API (Home Server)
+      - FILE_STORAGE_API_URL=http://${HOME_SERVER_HOST}:${FILE_STORAGE_API_PORT:-8082}
+
+      # JWT Config
+      - JWT_SECRET=${JWT_SECRET}
+      - JWT_EXPIRES_IN=${JWT_EXPIRES_IN:-24h}
+
+      # CORS
+      - CORS_ORIGIN=${CORS_ORIGIN:-http://localhost:3000}
+
+      # Rate Limiting
+      - RATE_LIMIT_MAX=${RATE_LIMIT_MAX:-100}
+      - RATE_LIMIT_WINDOW=${RATE_LIMIT_WINDOW:-60000}
+    volumes:
+      - ./services/api-service/src:/app/src:ro
+      - ./services/api-service/prisma:/app/prisma:ro
+    networks:
+      - frontend-net
+      - backend-net
+    depends_on:
+      encryption-service:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:8080/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+    labels:
+      - "hris.service=api-service"
+      - "hris.tier=backend"
+
+  # ===========================================================================
+  # ENCRYPTION-SERVICE (Python + FastAPI)
+  # ===========================================================================
+  encryption-service:
+    build:
+      context: ./services/encryption-service
+      dockerfile: Dockerfile
+      target: development
+    container_name: hris-encryption-service
+    restart: unless-stopped
+    ports:
+      - "${ENCRYPTION_SERVICE_PORT:-8081}:8081"
+    environment:
+      # Server Config
+      - ENVIRONMENT=development
+      - PORT=8081
+      - HOST=0.0.0.0
+
+      # Vault (Home Server)
+      - VAULT_ADDR=http://${HOME_SERVER_HOST}:${VAULT_PORT:-8200}
+      - VAULT_ROLE_ID=${VAULT_ROLE_ID}
+      - VAULT_SECRET_ID=${VAULT_SECRET_ID}
+      - VAULT_MOUNT_PATH=${VAULT_MOUNT_PATH:-transit}
+      - VAULT_KEY_NAME=${VAULT_KEY_NAME:-hris-file-key}
+
+      # Encryption Config
+      - ENCRYPTION_ALGORITHM=AES-256-GCM
+      - CHUNK_SIZE=${CHUNK_SIZE:-65536}
+
+      # Logging
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+    volumes:
+      - ./services/encryption-service/src:/app/src:ro
+    networks:
+      - backend-net
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8081/health')"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 20s
+    labels:
+      - "hris.service=encryption-service"
+      - "hris.tier=security"
+
+# =============================================================================
+# NETWORKS
+# =============================================================================
+networks:
+  frontend-net:
+    driver: bridge
+    name: hris-frontend-net
+    ipam:
+      config:
+        - subnet: 172.20.0.0/24
+    labels:
+      - "hris.network=frontend"
+      - "hris.description=app-client <-> api-service communication"
+
+  backend-net:
+    driver: bridge
+    name: hris-backend-net
+    internal: true  # No external access
+    ipam:
+      config:
+        - subnet: 172.21.0.0/24
+    labels:
+      - "hris.network=backend"
+      - "hris.description=api-service <-> encryption-service communication"
