@@ -25,6 +25,18 @@ echo -e "${BLUE}========================================${NC}"
 cd "$PROJECT_DIR"
 
 # -----------------------------------------------------------------------------
+# Step 0: Create data directories on HDD
+# -----------------------------------------------------------------------------
+echo -e "\n${YELLOW}[0/7] Creating data directories on HDD...${NC}"
+
+DATA_DIR="/data/hris"
+sudo mkdir -p ${DATA_DIR}/{postgres,vault,vault-logs,files}
+sudo chown -R $USER:$USER ${DATA_DIR}
+chmod 700 ${DATA_DIR}/postgres ${DATA_DIR}/vault
+
+echo -e "${GREEN}✓ Data directories created at ${DATA_DIR}${NC}"
+
+# -----------------------------------------------------------------------------
 # Step 1: Check prerequisites
 # -----------------------------------------------------------------------------
 echo -e "\n${YELLOW}[1/7] Checking prerequisites...${NC}"

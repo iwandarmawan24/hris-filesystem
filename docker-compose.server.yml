@@ -3,6 +3,10 @@
 # =============================================================================
 # Services: postgres, vault, file-storage-api, sftp-server
 # Accessed by: Local Laptop (api-service, encryption-service)
+#
+# Storage Strategy:
+#   - Config/Compose: ~/docker-stacks/hris-filesystem/ (SSD)
+#   - Data/Volumes:   /data/hris/ (HDD 1TB)
 # =============================================================================
 
 name: hris-server
@@ -23,7 +27,9 @@ services:
       - POSTGRES_DB=${POSTGRES_DB}
       - PGDATA=/var/lib/postgresql/data/pgdata
     volumes:
-      - postgres-data:/var/lib/postgresql/data
+      # Data on HDD
+      - /data/hris/postgres:/var/lib/postgresql/data
+      # Config on SSD (read-only)
       - ./config/postgres/init.sql:/docker-entrypoint-initdb.d/01-init.sql:ro
       - ./config/postgres/ssl:/var/lib/postgresql/ssl:ro
     networks:
@@ -68,8 +74,10 @@ services:
       - VAULT_DEV_ROOT_TOKEN_ID=${VAULT_DEV_ROOT_TOKEN:-devroot}
       # Production: Remove VAULT_DEV_* and use file config
     volumes:
-      - vault-data:/vault/data
-      - vault-logs:/vault/logs
+      # Data on HDD
+      - /data/hris/vault:/vault/data
+      - /data/hris/vault-logs:/vault/logs
+      # Config on SSD (read-only)
       - ./config/vault/config.hcl:/vault/config/config.hcl:ro
       - ./config/vault/policies:/vault/policies:ro
     networks:
@@ -129,6 +137,7 @@ services:
       # Logging
       - LOG_LEVEL=${LOG_LEVEL:-info}
     volumes:
+      # Config on SSD (read-only)
       - ./config/sftp/keys:/app/keys:ro
     networks:
       - storage-net
@@ -158,7 +167,9 @@ services:
     environment:
       - SFTP_USERS=${SFTP_USER:-hris}::1000:1000:data/encrypted
     volumes:
-      - file-storage:/home/${SFTP_USER:-hris}/data
+      # Data on HDD
+      - /data/hris/files:/home/${SFTP_USER:-hris}/data
+      # Config on SSD (read-only)
       - ./config/sftp/keys/sftp_key.pub:/home/${SFTP_USER:-hris}/.ssh/keys/sftp_key.pub:ro
       - ./config/sftp/sshd_config:/etc/ssh/sshd_config.d/custom.conf:ro
     networks:
@@ -208,38 +219,3 @@ networks:
     labels:
       - "hris.network=storage"
       - "hris.description=file-storage-api <-> sftp-server communication"
-
-# =============================================================================
-# VOLUMES
-# =============================================================================
-volumes:
-  postgres-data:
-    driver: local
-    name: hris-postgres-data
-    labels:
-      - "hris.volume=postgres"
-      - "hris.data=metadata-only"
-      - "hris.backup=required"
-
-  vault-data:
-    driver: local
-    name: hris-vault-data
-    labels:
-      - "hris.volume=vault"
-      - "hris.data=encrypted-keys"
-      - "hris.backup=critical"
-
-  vault-logs:
-    driver: local
-    name: hris-vault-logs
-    labels:
-      - "hris.volume=vault-logs"
-      - "hris.data=audit-logs"
-
-  file-storage:
-    driver: local
-    name: hris-file-storage
-    labels:
-      - "hris.volume=file-storage"
-      - "hris.data=encrypted-blobs-only"
-      - "hris.backup=required"
