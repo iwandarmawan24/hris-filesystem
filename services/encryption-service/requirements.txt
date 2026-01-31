@@ -1,0 +1,27 @@
+# =============================================================================
+# HRIS Encryption Service - Python Dependencies
+# =============================================================================
+
+# Web Framework
+fastapi==0.109.2
+uvicorn[standard]==0.27.1
+python-multipart==0.0.9
+
+# Vault Client
+hvac==2.1.0
+
+# Cryptography
+cryptography==42.0.2
+
+# Validation
+pydantic==2.6.1
+pydantic-settings==2.1.0
+
+# HTTP Client
+httpx==0.26.0
+
+# Logging
+structlog==24.1.0
+
+# Health checks
+prometheus-client==0.19.0

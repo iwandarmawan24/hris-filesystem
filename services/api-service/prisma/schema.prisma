@@ -1,0 +1,191 @@
+// =============================================================================
+// HRIS Filesystem - Prisma Schema
+// =============================================================================
+// Maps to PostgreSQL database on home server
+// Stores METADATA ONLY - never file content
+// =============================================================================
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// =============================================================================
+// USERS
+// =============================================================================
+model User {
+  id           String    @id @default(uuid()) @db.Uuid
+  email        String    @unique @db.VarChar(255)
+  passwordHash String    @map("password_hash") @db.VarChar(255)
+  fullName     String    @map("full_name") @db.VarChar(255)
+  role         UserRole  @default(user)
+  isActive     Boolean   @default(true) @map("is_active")
+  createdAt    DateTime  @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt    DateTime  @updatedAt @map("updated_at") @db.Timestamptz
+  lastLoginAt  DateTime? @map("last_login_at") @db.Timestamptz
+
+  // Relations
+  files             File[]
+  permissions       FilePermission[] @relation("PermissionUser")
+  grantedPermissions FilePermission[] @relation("PermissionGranter")
+  sessions          Session[]
+  auditLogs         AuditLog[]
+
+  @@map("users")
+}
+
+enum UserRole {
+  admin
+  user
+  viewer
+}
+
+// =============================================================================
+// FILES (Metadata Only)
+// =============================================================================
+model File {
+  id                String    @id @default(uuid()) @db.Uuid
+
+  // Original file info
+  originalName      String    @map("original_name") @db.VarChar(500)
+  originalSize      BigInt    @map("original_size")
+  mimeType          String?   @map("mime_type") @db.VarChar(255)
+
+  // Storage reference (NOT content)
+  storagePath       String    @unique @map("storage_path") @db.VarChar(500)
+  encryptedSize     BigInt    @map("encrypted_size")
+
+  // Integrity
+  checksumOriginal  String    @map("checksum_original") @db.VarChar(64)
+  checksumEncrypted String    @map("checksum_encrypted") @db.VarChar(64)
+
+  // Encryption metadata (NOT the key)
+  encryptedDek      String    @map("encrypted_dek") @db.Text
+  vaultKeyVersion   Int       @map("vault_key_version")
+  encryptionIv      String?   @map("encryption_iv") @db.VarChar(48)
+
+  // Ownership
+  ownerId           String    @map("owner_id") @db.Uuid
+  owner             User      @relation(fields: [ownerId], references: [id], onDelete: Cascade)
+
+  // Timestamps
+  createdAt         DateTime  @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt         DateTime  @updatedAt @map("updated_at") @db.Timestamptz
+  deletedAt         DateTime? @map("deleted_at") @db.Timestamptz
+
+  // Relations
+  permissions       FilePermission[]
+
+  @@index([ownerId], name: "idx_files_owner")
+  @@index([createdAt(sort: Desc)], name: "idx_files_created")
+  @@index([storagePath], name: "idx_files_storage_path")
+  @@map("files")
+}
+
+// =============================================================================
+// FILE PERMISSIONS
+// =============================================================================
+model FilePermission {
+  id         String          @id @default(uuid()) @db.Uuid
+  fileId     String          @map("file_id") @db.Uuid
+  userId     String          @map("user_id") @db.Uuid
+  permission PermissionType
+  grantedBy  String?         @map("granted_by") @db.Uuid
+  grantedAt  DateTime        @default(now()) @map("granted_at") @db.Timestamptz
+  expiresAt  DateTime?       @map("expires_at") @db.Timestamptz
+
+  // Relations
+  file    File  @relation(fields: [fileId], references: [id], onDelete: Cascade)
+  user    User  @relation("PermissionUser", fields: [userId], references: [id], onDelete: Cascade)
+  granter User? @relation("PermissionGranter", fields: [grantedBy], references: [id])
+
+  @@unique([fileId, userId, permission], name: "unique_file_user_permission")
+  @@index([fileId], name: "idx_permissions_file")
+  @@index([userId], name: "idx_permissions_user")
+  @@map("file_permissions")
+}
+
+enum PermissionType {
+  read
+  write
+  delete
+  share
+}
+
+// =============================================================================
+// AUDIT LOGS
+// =============================================================================
+model AuditLog {
+  id           String       @id @default(uuid()) @db.Uuid
+
+  // Who
+  userId       String?      @map("user_id") @db.Uuid
+  userEmail    String?      @map("user_email") @db.VarChar(255)
+  ipAddress    String?      @map("ip_address") @db.VarChar(45)
+  userAgent    String?      @map("user_agent") @db.Text
+
+  // What
+  action       AuditAction
+  resourceType ResourceType @map("resource_type")
+  resourceId   String?      @map("resource_id") @db.Uuid
+  details      Json?
+
+  // When
+  createdAt    DateTime     @default(now()) @map("created_at") @db.Timestamptz
+
+  // Relations
+  user User? @relation(fields: [userId], references: [id], onDelete: SetNull)
+
+  @@index([userId], name: "idx_audit_user")
+  @@index([action], name: "idx_audit_action")
+  @@index([resourceType, resourceId], name: "idx_audit_resource")
+  @@index([createdAt(sort: Desc)], name: "idx_audit_created")
+  @@map("audit_logs")
+}
+
+enum AuditAction {
+  login
+  logout
+  login_failed
+  file_upload
+  file_download
+  file_delete
+  file_share
+  permission_grant
+  permission_revoke
+  user_create
+  user_update
+  user_delete
+}
+
+enum ResourceType {
+  user
+  file
+  permission
+  system
+}
+
+// =============================================================================
+// SESSIONS
+// =============================================================================
+model Session {
+  id               String    @id @default(uuid()) @db.Uuid
+  userId           String    @map("user_id") @db.Uuid
+  refreshTokenHash String    @map("refresh_token_hash") @db.VarChar(64)
+  ipAddress        String?   @map("ip_address") @db.VarChar(45)
+  userAgent        String?   @map("user_agent") @db.Text
+  isValid          Boolean   @default(true) @map("is_valid")
+  createdAt        DateTime  @default(now()) @map("created_at") @db.Timestamptz
+  expiresAt        DateTime  @map("expires_at") @db.Timestamptz
+  revokedAt        DateTime? @map("revoked_at") @db.Timestamptz
+
+  // Relations
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId], name: "idx_sessions_user")
+  @@map("sessions")
+}

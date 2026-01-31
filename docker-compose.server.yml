@@ -104,12 +104,13 @@ services:
       - "hris.critical=true"
 
   # ===========================================================================
-  # FILE-STORAGE-API (Node.js Thin Wrapper)
+  # FILE-STORAGE-API (Node.js + Fastify - SFTP Wrapper)
   # ===========================================================================
   file-storage-api:
     build:
       context: ./services/file-storage-api
       dockerfile: Dockerfile
+      target: production
     container_name: hris-file-storage-api
     restart: unless-stopped
     ports:
@@ -129,15 +130,14 @@ services:
 
       # API Security
       - API_KEY=${FILE_STORAGE_API_KEY}
-      - ALLOWED_IPS=${ALLOWED_IPS:-}
 
-      # Checksum
-      - CHECKSUM_ALGORITHM=sha256
+      # Limits
+      - MAX_FILE_SIZE=104857600
 
       # Logging
       - LOG_LEVEL=${LOG_LEVEL:-info}
     volumes:
-      # Config on SSD (read-only)
+      # SFTP private key (read-only)
       - ./config/sftp/keys:/app/keys:ro
     networks:
       - storage-net
@@ -161,17 +161,13 @@ services:
     image: atmoz/sftp:alpine
     container_name: hris-sftp-server
     restart: unless-stopped
-    # Port NOT exposed externally - only file-storage-api can access
-    # ports:
-    #   - "${SFTP_PORT:-2222}:22"
     environment:
-      - SFTP_USERS=${SFTP_USER:-hris}::1000:1000:data/encrypted
+      - SFTP_USERS=${SFTP_USER:-hris}::1001:1001:data/encrypted
     volumes:
       # Data on HDD
       - /data/hris/files:/home/${SFTP_USER:-hris}/data
-      # Config on SSD (read-only)
+      # SSH authorized keys
       - ./config/sftp/keys/sftp_key.pub:/home/${SFTP_USER:-hris}/.ssh/keys/sftp_key.pub:ro
-      - ./config/sftp/sshd_config:/etc/ssh/sshd_config.d/custom.conf:ro
     networks:
       - storage-net
     healthcheck:
@@ -218,4 +214,4 @@ networks:
         - subnet: 172.24.0.0/24
     labels:
       - "hris.network=storage"
-      - "hris.description=file-storage-api <-> sftp-server communication"
+      - "hris.description=file-storage-api <-> sftp-server internal network"

@@ -1,93 +1,56 @@
 # =============================================================================
-# HRIS Filesystem - File Storage API (Node.js + Fastify)
+# HRIS File Storage API (Python + FastAPI)
 # =============================================================================
-# Thin wrapper over SFTP for file storage operations
+# Lightweight service for storing/retrieving encrypted file blobs
+# Direct filesystem access - no SFTP complexity
 # =============================================================================
 
-# -----------------------------------------------------------------------------
-# Stage 1: Dependencies
-# -----------------------------------------------------------------------------
-FROM node:20-alpine AS deps
+FROM python:3.12-slim AS base
+
+# Set environment variables
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PIP_NO_CACHE_DIR=1 \
+    PIP_DISABLE_PIP_VERSION_CHECK=1
 
 WORKDIR /app
 
-# Copy package files
-COPY package*.json ./
-
-# Install production dependencies only
-RUN npm ci --only=production
-
 # -----------------------------------------------------------------------------
-# Stage 2: Development
+# Production Stage
 # -----------------------------------------------------------------------------
-FROM node:20-alpine AS development
-
-WORKDIR /app
-
-# Copy package files and install all deps
-COPY package*.json ./
-RUN npm ci
-
-# Copy source code
-COPY . .
-
-# Expose API port
-EXPOSE 8082
-
-# Health check
-HEALTHCHECK --interval=30s --timeout=10s --start-period=20s --retries=3 \
-    CMD wget --spider -q http://localhost:8082/health || exit 1
-
-# Start development server with hot reload
-CMD ["npm", "run", "dev"]
-
-# -----------------------------------------------------------------------------
-# Stage 3: Build
-# -----------------------------------------------------------------------------
-FROM node:20-alpine AS builder
-
-WORKDIR /app
-
-# Copy package files
-COPY package*.json ./
-RUN npm ci
-
-# Copy source code
-COPY . .
-
-# Build TypeScript
-RUN npm run build
-
-# -----------------------------------------------------------------------------
-# Stage 4: Production
-# -----------------------------------------------------------------------------
-FROM node:20-alpine AS production
-
-WORKDIR /app
+FROM base AS production
 
 # Create non-root user
-RUN addgroup -g 1001 -S nodejs && \
-    adduser -S nodejs -u 1001 -G nodejs
+RUN groupadd --gid 1001 appgroup && \
+    useradd --uid 1001 --gid appgroup --shell /bin/bash appuser
 
-# Copy production dependencies from deps stage
-COPY --from=deps /app/node_modules ./node_modules
+# Install dependencies
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
 
-# Copy built application
-COPY --from=builder /app/dist ./dist
-COPY --from=builder /app/package.json ./
+# Copy application code
+COPY src/ ./
 
-# Create keys directory
-RUN mkdir -p /app/keys && chown -R nodejs:nodejs /app
+# Create storage directory (will be mounted as volume)
+RUN mkdir -p /data/files && \
+    chown -R appuser:appgroup /data/files
+
+# Set ownership
+RUN chown -R appuser:appgroup /app
 
 # Switch to non-root user
-USER nodejs
+USER appuser
 
-# Expose port
-EXPOSE 8082
+# Environment variables
+ENV FILE_STORAGE_HOST=0.0.0.0 \
+    FILE_STORAGE_PORT=8080 \
+    FILE_STORAGE_STORAGE_PATH=/data/files
+
+EXPOSE 8080
 
 # Health check
-HEALTHCHECK --interval=30s --timeout=10s --start-period=20s --retries=3 \
-    CMD wget --spider -q http://localhost:8082/health || exit 1
+HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
+    CMD python -c "import urllib.request; urllib.request.urlopen('http://localhost:8080/health')" || exit 1
 
-# Start production server
-CMD ["node", "dist/index.js"]
+# Start server
+CMD ["python", "main.py"]
